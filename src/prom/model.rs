@@ -13,6 +13,7 @@ impl MetricHistory {
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.metrics.len() == 0
     }
@@ -31,6 +32,7 @@ pub enum MetricType {
     Gauge,
     Counter,
     Histogram,
+    Summary,
 }
 
 pub struct SingleScrapeMetric {
@@ -68,6 +70,7 @@ pub struct Metric {
 #[derive(Clone)]
 pub struct MetricDetails {
     pub name: String,
+    #[allow(dead_code)]
     pub docstring: String,
     pub metric_type: MetricType,
 }
@@ -90,6 +93,7 @@ impl Metric {
 
 #[derive(Clone)]
 pub struct TimeSeries {
+    #[allow(dead_code)]
     pub labels: HashMap<String, String>,
     pub samples: Vec<Sample>,
 }
@@ -99,6 +103,7 @@ pub enum Sample {
     GaugeSample(SingleValueSample),
     CounterSample(SingleValueSample),
     HistogramSample(HistogramValueSample),
+    SummarySample(SummaryValueSample),
 }
 
 #[derive(Clone, Debug)]
@@ -123,6 +128,26 @@ impl Bucket {
 pub struct HistogramValueSample {
     pub timestamp: u64,
     pub bucket_values: Vec<Bucket>,
+    pub sum: f64,
+    pub count: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Quantile {
+    pub name: String,
+    pub value: f64,
+}
+
+impl Quantile {
+    pub fn new(name: String, value: f64) -> Self {
+        Self { name, value }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SummaryValueSample {
+    pub timestamp: u64,
+    pub quantile_values: Vec<Quantile>,
     pub sum: f64,
     pub count: u64,
 }
@@ -174,7 +199,8 @@ mod tests {
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_secs(),
-            );
+            )
+            .unwrap();
             let name_to_test = single_scrape_metric.name.clone();
             let labels_to_test = match single_scrape_metric.value_per_labels.keys().next() {
                 Some(key) => key.clone(),
@@ -194,7 +220,8 @@ mod tests {
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_secs(),
-            );
+            )
+            .unwrap();
             // update existing metrics
             let metric_to_update_option = metrics
                 .iter_mut()

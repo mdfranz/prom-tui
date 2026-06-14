@@ -31,16 +31,24 @@ impl MetricScraper {
         }
     }
 
-    pub fn get_history_lock(&self) -> anyhow::Result<RwLockReadGuard<MetricHistory>> {
+    pub fn get_history_lock(&self) -> anyhow::Result<RwLockReadGuard<'_, MetricHistory>> {
         self.metrics_history
             .read()
-            .map_err(|err| anyhow::anyhow!("failed to aquire lock of metrics history: {}", err))
+            .or_else(|e| {
+                log::warn!("metrics history lock was poisoned, recovering");
+                Ok(e.into_inner())
+            })
+            .map_err(|_: std::convert::Infallible| unreachable!())
     }
 
-    pub fn get_error_msg_read_guard(&self) -> anyhow::Result<RwLockReadGuard<Option<String>>> {
+    pub fn get_error_msg_read_guard(&self) -> anyhow::Result<RwLockReadGuard<'_, Option<String>>> {
         self.error_msg
             .read()
-            .map_err(|err| anyhow::anyhow!("failed to aquire lock: {}", err))
+            .or_else(|e| {
+                log::warn!("error_msg lock was poisoned, recovering");
+                Ok(e.into_inner())
+            })
+            .map_err(|_: std::convert::Infallible| unreachable!())
     }
 }
 
@@ -89,12 +97,24 @@ async fn scrape_metric_endpoint(
 }
 
 fn update_history_with_new_scrape(history: &MetricHistoryArc, splitted_metrics: Vec<Vec<String>>) {
-    let mut history_guard = history
-        .write()
-        .expect("to acquire write lock of metrics history");
     let timestamp = get_timestamp_unix_epoch();
-    for part in splitted_metrics {
-        let single_scrape_metric = decode_single_scrape_metric(part, timestamp);
+    let decoded: Vec<_> = splitted_metrics
+        .into_iter()
+        .filter_map(|part| {
+            decode_single_scrape_metric(part, timestamp)
+                .map_err(|e| log::error!("skipping malformed metric: {}", e))
+                .ok()
+        })
+        .collect();
+
+    let mut history_guard = match history.write() {
+        Ok(guard) => guard,
+        Err(e) => {
+            log::warn!("metrics history write lock was poisoned, recovering");
+            e.into_inner()
+        }
+    };
+    for single_scrape_metric in decoded {
         let metric_to_update_option = history_guard.metrics.get_mut(&single_scrape_metric.name);
         match metric_to_update_option {
             Some(metric_to_update) => {
@@ -116,9 +136,13 @@ fn update_history_with_new_scrape(history: &MetricHistoryArc, splitted_metrics: 
 }
 
 fn update_error_status(error_msg: &Arc<RwLock<Option<String>>>, error_message: Option<String>) {
-    let mut has_error_guard = error_msg
-        .write()
-        .expect("to acquire write lock of has_error");
+    let mut has_error_guard = match error_msg.write() {
+        Ok(guard) => guard,
+        Err(e) => {
+            log::warn!("error_msg write lock was poisoned, recovering");
+            e.into_inner()
+        }
+    };
     *has_error_guard = error_message;
 }
 

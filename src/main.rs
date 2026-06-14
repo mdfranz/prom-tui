@@ -12,7 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let matches = cli::build().get_matches();
 
     // initialize the logger
-    log4rs::init_config(app_config("log.out", matches.value_of("Logging"))).unwrap();
+    log4rs::init_config(app_config("prom-tui.log", matches.value_of("Logging"))).unwrap();
     log::info!("Starting the application!");
 
     let regex = Regex::new(":(\\d{2,5})/").unwrap();

@@ -14,6 +14,7 @@ mod histogram_data;
 mod history;
 mod search;
 mod style;
+mod summary_data;
 
 const fn focus_color(has_focus: bool) -> Color {
     if has_focus {
@@ -40,10 +41,10 @@ where
     let scrape_interval = format!("Scraping interval: {}s", app.scrape_interval);
     let mut text = vec![Spans::from(endpoint), Spans::from(scrape_interval)];
 
-    let error_msg_guard = app
-        .metric_scraper
-        .get_error_msg_read_guard()
-        .expect("to get error msg guard");
+    let error_msg_guard = match app.metric_scraper.get_error_msg_read_guard() {
+        Ok(guard) => guard,
+        Err(_) => return,
+    };
     if let Some(error_msg) = &*error_msg_guard {
         text.push(Spans::from(Span::styled(
             format!("Prom-tui scraper is failing with error: {}", error_msg),

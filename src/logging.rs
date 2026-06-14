@@ -8,12 +8,6 @@ pub fn app_config(file_name: &str, level: Option<&str>) -> Config {
         Some(l) => convert_to_level(l),
         None => Ok(LevelFilter::Info),
     };
-    if level.is_err() {
-        println!(
-            "error message: {}, falling back to default",
-            level.unwrap_err()
-        )
-    }
     let log_file = FileAppender::builder()
         .encoder(Box::new(PatternEncoder::new("{d} - {l} - {m}{n}")))
         .build(file_name)
@@ -69,7 +63,7 @@ mod tests {
             Ok(_) => {
                 print!("{} contains:\n{}", display, s);
                 assert!(s.contains("test logging"));
-                let reg_match = Regex::new("\\d{4}-\\d{2}-\\d{1,2}T\\d{1,2}:\\d{1,2}:\\d{1,2}\\.\\d+\\+\\d{2}:\\d{2} - INFO - test logging").unwrap();
+                let reg_match = Regex::new("\\d{4}-\\d{2}-\\d{1,2}T\\d{1,2}:\\d{1,2}:\\d{1,2}\\.\\d+[-+]\\d{2}:\\d{2} - INFO - test logging").unwrap();
                 assert!(reg_match.is_match(&s))
             }
         }

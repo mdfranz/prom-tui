@@ -1,5 +1,5 @@
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event as CEvent, KeyCode},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event as CEvent, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -84,7 +84,14 @@ pub async fn show(endpoint: String, scrape_interval: u64) -> Result<(), Box<dyn 
         match rx.recv().await {
             Some(Event::Input(event)) => match event.code {
                 KeyCode::Char('q') => {
-                    log::info!("Shuting down...");
+                    log::info!("Shutting down...");
+                    if let Err(e) = notify_shutdown.send(()) {
+                        log::error!("Error sending shutdown signal: {}", e);
+                    }
+                    break;
+                }
+                KeyCode::Char('c') if event.modifiers.contains(KeyModifiers::CONTROL) => {
+                    log::info!("Shutting down...");
                     if let Err(e) = notify_shutdown.send(()) {
                         log::error!("Error sending shutdown signal: {}", e);
                     }
@@ -95,7 +102,9 @@ pub async fn show(endpoint: String, scrape_interval: u64) -> Result<(), Box<dyn 
                 KeyCode::Tab | KeyCode::BackTab | KeyCode::Right | KeyCode::Left => app.on_tab()?,
                 _ => {} //app.dispatch_input(event.code),
             },
-            Some(Event::Tick) => {}
+            Some(Event::Tick) => {
+                app.auto_select_if_unset()?;
+            }
             None => {}
         }
     }

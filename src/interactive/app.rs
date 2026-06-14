@@ -23,6 +23,7 @@ pub struct App<'a> {
     pub labels_list_state: ListState,
     pub selected_metric: Option<String>,
     pub selected_label: Option<String>,
+    #[allow(dead_code)]
     pub should_quit: bool,
 }
 
@@ -125,6 +126,32 @@ impl<'a> App<'a> {
             ElementInFocus::MetricHeaders => ElementInFocus::LabelsView,
             ElementInFocus::LabelsView => ElementInFocus::MetricHeaders,
         };
+        Ok(())
+    }
+
+    pub fn auto_select_if_unset(&mut self) -> Result<(), Box<dyn Error>> {
+        let history = self.metric_scraper.get_history_lock()?;
+        if self.selected_metric.is_none() {
+            let mut headers = history.get_metrics_headers();
+            headers.sort();
+            if let Some(first) = headers.into_iter().next() {
+                self.selected_metric = Some(first);
+                self.metric_list_state.select(Some(0));
+            }
+        }
+        if self.selected_label.is_none() {
+            if let Some(name) = &self.selected_metric.clone() {
+                if let Some(metric) = history.get_metric(name) {
+                    let mut labels: Vec<String> =
+                        metric.time_series.keys().cloned().collect();
+                    labels.sort();
+                    if let Some(first) = labels.into_iter().next() {
+                        self.selected_label = Some(first);
+                        self.labels_list_state.select(Some(0));
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }

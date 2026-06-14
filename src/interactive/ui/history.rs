@@ -12,7 +12,7 @@ use tui::{
 use crate::prom::{Metric, MetricType, Sample};
 use chrono::prelude::*;
 
-use super::{graph_data::GraphData, histogram_data::HistogramData};
+use super::{graph_data::GraphData, histogram_data::HistogramData, summary_data::SummaryData};
 
 pub fn draw<B>(
     f: &mut Frame<B>,
@@ -28,6 +28,12 @@ pub fn draw<B>(
             if let Some(histogram_data) = HistogramData::parse(metric, selected_label) {
                 draw_histogram_table(f, chunk_left, &histogram_data);
                 draw_histogram(f, chunk_right, &histogram_data);
+            }
+        }
+        MetricType::Summary => {
+            if let Some(summary_data) = SummaryData::parse(metric, selected_label) {
+                draw_summary_details(f, chunk_left, &summary_data);
+                draw_summary_quantiles(f, chunk_right, &summary_data);
             }
         }
         _ => {
@@ -60,7 +66,7 @@ where
                 unimplemented!();
             }
         };
-        let time = Local.timestamp(timestamp as i64, 0).to_rfc2822();
+        let time = Local.timestamp_opt(timestamp as i64, 0).unwrap().to_rfc2822();
         Row::new(vec![time, format!("{:+.4e}", value)])
     });
 
@@ -196,5 +202,45 @@ where
         .bar_width(bar_width)
         .bar_style(Style::default().fg(Color::LightGreen))
         .value_style(Style::default().fg(Color::Black).bg(Color::LightGreen));
+    f.render_widget(t, area);
+}
+
+fn draw_summary_details<B>(f: &mut Frame<B>, area: Rect, summary_data: &SummaryData)
+where
+    B: Backend,
+{
+    let row = Row::new(vec![
+        summary_data.time.to_rfc2822(),
+        summary_data.count.to_string(),
+        format!("{:.4}", summary_data.sum),
+    ]);
+    let t = Table::new(vec![row])
+        .block(Block::default().borders(Borders::ALL).title("Summary Details"))
+        .header(
+            Row::new(vec!["Time", "Count", "Sum"])
+                .style(Style::default().add_modifier(Modifier::BOLD)),
+        )
+        .widths(&[
+            Constraint::Length(40),
+            Constraint::Length(15),
+            Constraint::Percentage(100),
+        ]);
+    f.render_widget(t, area);
+}
+
+fn draw_summary_quantiles<B>(f: &mut Frame<B>, area: Rect, summary_data: &SummaryData)
+where
+    B: Backend,
+{
+    let rows = summary_data.quantile_values.iter().map(|q| {
+        Row::new(vec![q.name.clone(), format!("{:.6}", q.value)])
+    });
+    let t = Table::new(rows)
+        .block(Block::default().borders(Borders::ALL).title("Quantiles"))
+        .header(
+            Row::new(vec!["Quantile", "Value"])
+                .style(Style::default().add_modifier(Modifier::BOLD)),
+        )
+        .widths(&[Constraint::Length(15), Constraint::Percentage(100)]);
     f.render_widget(t, area);
 }

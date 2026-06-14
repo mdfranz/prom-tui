@@ -2,23 +2,55 @@ use regex::Regex;
 
 use super::model::{Bucket, MetricType, SingleScrapeMetric};
 use super::Sample;
-use super::{HistogramValueSample, SingleValueSample};
+use super::{HistogramValueSample, Quantile, SingleValueSample, SummaryValueSample};
 use log::error;
 use std::collections::HashMap;
 
-pub fn decode_single_scrape_metric(lines: Vec<String>, timestamp: u64) -> SingleScrapeMetric {
-    let (name, docstring) = extract_name_docstring(&lines[0]).unwrap();
-    let metric_type = extract_type(&lines[1]).unwrap();
+pub fn decode_single_scrape_metric(
+    lines: Vec<String>,
+    timestamp: u64,
+) -> anyhow::Result<SingleScrapeMetric> {
+    if lines.is_empty() {
+        return Err(anyhow::anyhow!("empty metric lines"));
+    }
+
+    let mut line_idx = 0;
+    let mut name: Option<String> = None;
+    let mut docstring = String::new();
+    let mut metric_type_str = "gauge".to_string();
+
+    if lines[line_idx].starts_with("# HELP") {
+        let (n, d) = extract_name_docstring(&lines[line_idx])
+            .ok_or_else(|| anyhow::anyhow!("failed to parse HELP line: {:?}", lines[line_idx]))?;
+        name = Some(n);
+        docstring = d;
+        line_idx += 1;
+    }
+
+    if line_idx < lines.len() && lines[line_idx].starts_with("# TYPE") {
+        let t = extract_type(&lines[line_idx])
+            .ok_or_else(|| anyhow::anyhow!("failed to parse TYPE line: {:?}", lines[line_idx]))?;
+        if name.is_none() {
+            let (n, _) = extract_name_docstring(&lines[line_idx])
+                .ok_or_else(|| anyhow::anyhow!("failed to extract name from TYPE line: {:?}", lines[line_idx]))?;
+            name = Some(n);
+        }
+        metric_type_str = t;
+        line_idx += 1;
+    }
+
+    let name = name.ok_or_else(|| anyhow::anyhow!("could not determine metric name from: {:?}", lines.first()))?;
+
     let mut single_scrape_metric = SingleScrapeMetric {
         name: name,
         docstring: docstring,
         metric_type: MetricType::Gauge,
         value_per_labels: HashMap::new(),
     };
-    match metric_type.as_str() {
+    match metric_type_str.as_str() {
         "gauge" => {
-            for line in lines.iter().skip(2) {
-                if line == "" {
+            for line in lines.iter().skip(line_idx) {
+                if line == "" || line.starts_with('#') {
                     continue;
                 }
                 let labels = extract_labels(&line);
@@ -34,8 +66,8 @@ pub fn decode_single_scrape_metric(lines: Vec<String>, timestamp: u64) -> Single
             }
         }
         "counter" => {
-            for line in lines.iter().skip(2) {
-                if line == "" {
+            for line in lines.iter().skip(line_idx) {
+                if line == "" || line.starts_with('#') {
                     continue;
                 }
                 let labels = extract_labels(&line);
@@ -53,7 +85,7 @@ pub fn decode_single_scrape_metric(lines: Vec<String>, timestamp: u64) -> Single
         }
         // TODO handle also histogram with no additional labels
         "histogram" => {
-            let splitted_lines_for_histogram = further_split_metric_lines_for_histogram(&lines);
+            let splitted_lines_for_histogram = further_split_metric_lines_for_histogram(&lines, line_idx);
             for group_lines in splitted_lines_for_histogram.iter() {
                 let mut bucket_values = Vec::new();
                 // retrieve buckets values
@@ -83,11 +115,45 @@ pub fn decode_single_scrape_metric(lines: Vec<String>, timestamp: u64) -> Single
                 );
             }
         }
+        "summary" => {
+            let groups = further_split_metric_lines_for_histogram(&lines, line_idx);
+            for group_lines in groups.iter() {
+                if group_lines.len() < 2 {
+                    continue;
+                }
+                let mut quantile_values = Vec::new();
+                for line in group_lines.iter().take(group_lines.len() - 2) {
+                    if line == "" || line.starts_with('#') {
+                        continue;
+                    }
+                    let labels = extract_labels(line);
+                    let (labels_map, _) = extract_labels_key_and_map(labels);
+                    let quantile = labels_map.get("quantile").cloned().unwrap_or_default();
+                    let value = extract_value(line);
+                    quantile_values.push(Quantile::new(quantile, value));
+                }
+                let sum = extract_value(&group_lines[group_lines.len() - 2]);
+                let count_line = group_lines[group_lines.len() - 1].clone();
+                let labels = extract_labels(&count_line);
+                let (_, key) = extract_labels_key_and_map(labels);
+                let count = extract_value(&count_line) as u64;
+                single_scrape_metric.metric_type = MetricType::Summary;
+                single_scrape_metric.value_per_labels.insert(
+                    key,
+                    Sample::SummarySample(SummaryValueSample {
+                        timestamp,
+                        quantile_values,
+                        sum,
+                        count,
+                    }),
+                );
+            }
+        }
         _ => {
-            error!("invalid metric type: {}", metric_type);
+            error!("unsupported metric type: {}", metric_type_str);
         }
     }
-    single_scrape_metric
+    Ok(single_scrape_metric)
 }
 
 pub fn extract_labels_key_and_map(labels: Option<String>) -> (HashMap<String, String>, String) {
@@ -103,27 +169,37 @@ pub fn extract_labels_key_and_map(labels: Option<String>) -> (HashMap<String, St
 pub fn split_metric_lines(lines: Vec<String>) -> Vec<Vec<String>> {
     let mut metrics: Vec<Vec<String>> = Vec::new();
     let mut metric_lines: Vec<String> = Vec::new();
+    let mut group_has_help = false;
 
-    for (index, line) in lines.iter().enumerate() {
-        if metric_lines.len() != 0
-            && (index + 1 == lines.len() || lines[index + 1].starts_with("# HELP"))
-        {
-            metric_lines.push(line.to_string());
+    for line in lines.iter() {
+        let starts_new_group = line.starts_with("# HELP")
+            || (line.starts_with("# TYPE") && !group_has_help);
+
+        if starts_new_group && !metric_lines.is_empty() {
             metrics.push(metric_lines);
             metric_lines = Vec::new();
-            continue;
+            group_has_help = false;
         }
+
+        if line.starts_with("# HELP") {
+            group_has_help = true;
+        }
+
         metric_lines.push(line.to_string());
+    }
+
+    if !metric_lines.is_empty() {
+        metrics.push(metric_lines);
     }
 
     return metrics;
 }
 
-pub fn further_split_metric_lines_for_histogram(lines: &[String]) -> Vec<Vec<String>> {
+pub fn further_split_metric_lines_for_histogram(lines: &[String], data_start: usize) -> Vec<Vec<String>> {
     let mut metrics: Vec<Vec<String>> = Vec::new();
     let mut metric_lines: Vec<String> = Vec::new();
 
-    for line in lines.iter().skip(2) {
+    for line in lines.iter().skip(data_start) {
         if line.contains("_count{") || line.contains("_count ") {
             metric_lines.push(line.to_string());
             metrics.push(metric_lines);
@@ -280,12 +356,12 @@ mod tests {
         let lines = generate_metric_lines();
         let splitted_lines = split_metric_lines(lines);
         let further_splitted_metrics_for_hist =
-            further_split_metric_lines_for_histogram(&splitted_lines[4]);
+            further_split_metric_lines_for_histogram(&splitted_lines[4], 2);
         assert_eq!(further_splitted_metrics_for_hist.len(), 2);
         assert_eq!(further_splitted_metrics_for_hist[0].len(), 10);
         assert_eq!(further_splitted_metrics_for_hist[1].len(), 10);
         let further_splitted_metrics_for_hist =
-            further_split_metric_lines_for_histogram(&splitted_lines[5]);
+            further_split_metric_lines_for_histogram(&splitted_lines[5], 2);
         assert_eq!(further_splitted_metrics_for_hist.len(), 1);
         assert_eq!(further_splitted_metrics_for_hist[0].len(), 10);
     }
@@ -337,7 +413,8 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
-        );
+        )
+        .unwrap();
         assert_eq!(metric.name, "metric_1");
     }
 
@@ -356,7 +433,8 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
-        );
+        )
+        .unwrap();
         assert_eq!(metric.name, "metric_1");
     }
     #[test]
@@ -405,7 +483,8 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
-        );
+        )
+        .unwrap();
         assert_eq!(metric.name, "response_time");
         let metric_hist_1 = metric.value_per_labels.get("env=\"production\"").unwrap();
         let expected_1 = Vec::from([
@@ -458,7 +537,8 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
-        );
+        )
+        .unwrap();
         assert_eq!(metric.name, "response_time");
         let metric_hist_1 = metric
             .value_per_labels
