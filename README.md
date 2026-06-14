@@ -1,5 +1,8 @@
 # prom-tui
 
+> [!NOTE]
+> This project modernizes and fixes an older codebase that hasn't been updated in years, updating deprecated dependencies and adding features like Prometheus Summary metric support.
+
 A simple terminal ui application to visualize Prometheus metrics.
 
 ## Usage
